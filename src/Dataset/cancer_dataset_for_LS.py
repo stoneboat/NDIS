@@ -11,7 +11,7 @@ import datadotworld as ddw
 
 import time
 
-from Approx_Least_Square_Alg.commons import twoNorm, get_w, data_normalize_by_features
+from analysis.commons import twoNorm, get_w, data_normalize_by_features
 from numpy.linalg import inv as mat_inv
 
 

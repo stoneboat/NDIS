@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import time
 
-from Approx_Least_Square_Alg.commons import compute_xopt, get_w, twoNorm, data_normalize_by_features
+from analysis.commons import compute_xopt, get_w, twoNorm, data_normalize_by_features
 
 
 def load_song_dataset_matrices_for_LS(file_dataset_name="./Dataset/YearPredictionMSD.txt"):

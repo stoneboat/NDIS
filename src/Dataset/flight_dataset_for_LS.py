@@ -5,7 +5,7 @@ from nycflights13 import flights
 import pandas as pd
 import numpy as np
 
-from Approx_Least_Square_Alg.commons import compute_xopt, get_w, twoNorm, data_normalize_by_features
+from analysis.commons import compute_xopt, get_w, twoNorm, data_normalize_by_features
 
 
 def save_flight_dataset_matrices_for_LS(file_X_name="./Dataset/flight-LR-X.txt",
