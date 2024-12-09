@@ -10,6 +10,7 @@ __pycache__/
 .Python
 log/
 fig/
+src/Dataset/*.txt
 build/
 develop-eggs/
 dist/
