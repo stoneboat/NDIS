@@ -1,0 +1,9 @@
+ipykernel
+mpmath
+scipy
+matplotlib
+dp-accounting
+scikit-learn
+scikit-optimize
+nycflights13
+pandas
