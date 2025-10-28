@@ -7,3 +7,5 @@ scikit-learn
 scikit-optimize
 nycflights13
 pandas
+datadotworld
+chi2comb
