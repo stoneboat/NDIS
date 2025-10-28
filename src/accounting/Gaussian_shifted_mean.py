@@ -189,8 +189,8 @@ def delta_via_fft_accounting(eps, sigma, k, mu_norm=1.0, h=None, L=None, target_
     py_k = _pmf_power_fft(py, k, M)
 
     # Evaluate delta(eps) = P[X_sum > eps] - e^eps P[Y_sum > eps]
-    tail_x = _tail_prob_from_pmf(xs, px_k, h, L, eps)
-    tail_y = _tail_prob_from_pmf(xs, py_k, h, L, eps)
+    tail_x = _tail_prob_from_pmf(xs, px_k, h, eps)
+    tail_y = _tail_prob_from_pmf(xs, py_k, h, eps)
     delta = tail_x - np.exp(eps) * tail_y
     # Numerical stability
     return max(0.0, min(1.0, float(delta)))
