@@ -1,40 +1,54 @@
 echo "Installing Environment for dp_NDIS [Main Environment]"
 
-# Set the virtual environment path using the python-venv directory as prefix
-mkdir -p /tmp/python-venv
+module load anaconda
 
-# Create the virtual environment for the main project (dp_private_learning)
-MAIN_VENV_PATH="/tmp/python-venv/dp_NDIS_venv"
-
-if [ -d "$MAIN_VENV_PATH" ]; then
-    echo "Virtual environment 'dp_NDIS_venv' already exists in $MAIN_VENV_PATH."
+# Initialize conda in this non-interactive shell
+if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
 else
-    echo "Creating virtual environment 'dp_NDIS_venv' in $MAIN_VENV_PATH..."
-    python3.11 -m venv "$MAIN_VENV_PATH"
+    echo "conda not found after loading anaconda3 module" >&2
+    exit 1
 fi
 
-source "$MAIN_VENV_PATH/bin/activate"
+# Set the conda environment path using the python-venv directory as prefix
+mkdir -p /tmp/python-venv
 
+CONDA_ENV_PATH="/tmp/python-venv/dp_NDIS_venv"
+
+if [ -d "$CONDA_ENV_PATH" ]; then
+    echo "Conda env 'dp_NDIS_venv' already exists in $CONDA_ENV_PATH."
+else
+    echo "Creating conda env 'dp_NDIS_venv' in $CONDA_ENV_PATH..."
+    conda create --prefix "$CONDA_ENV_PATH" python=3.11 -y || { echo "conda create failed" >&2; exit 1; }
+fi
+
+# Activate the conda environment
+conda activate "$CONDA_ENV_PATH"
+
+# Install conda packages first (C libraries)
+# Note: chi2comb needs both C library (conda) and Python bindings (pip)
+echo "Installing conda packages (C libraries)..."
+conda install -c conda-forge chi2comb -y || { echo "conda install chi2comb failed" >&2; exit 1; }
+
+# Upgrade pip
 pip install --upgrade pip
 
 # Install packages from requirements.txt
-pip install -r requirements.txt
+echo "Installing pip packages..."
+pip install -r requirements.txt || { echo "pip install failed" >&2; exit 1; }
 
 # Register the kernel
-python -m ipykernel install --user --name=dp-NDIS-env --display-name "dp-NDIS-env"
+python -m ipykernel install --user --name=dp-NDIS-env --display-name "dp-NDIS-env" || { echo "kernel registration failed" >&2; exit 1; }
 
 # Create the custom kernel spec directory
 KERNEL_DIR=~/.local/share/jupyter/kernels/dp-NDIS-env
 mkdir -p "$KERNEL_DIR"
 
-# Get absolute path for the virtual environment
-ABSOLUTE_VENV_PATH=$(realpath "$MAIN_VENV_PATH")
-
 # Write the kernel.json
 cat > "$KERNEL_DIR/kernel.json" <<EOL
 {
   "argv": [
-    "$ABSOLUTE_VENV_PATH/bin/python",
+    "$CONDA_ENV_PATH/bin/python",
     "-m",
     "ipykernel_launcher",
     "-f",
@@ -45,4 +59,5 @@ cat > "$KERNEL_DIR/kernel.json" <<EOL
 }
 EOL
 
-deactivate
+# Deactivate conda environment
+conda deactivate
