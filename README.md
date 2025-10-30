@@ -42,7 +42,7 @@ NDIS/
    │
    ├─ analysis/
    │  ├─ ALS_privacy_analysis.py  # Privacy analysis for Approximate LS
-   │  ├─ NDIS_estimator.py        # Core NDIS estimation functions
+   │  ├─ archive_NDIS.py          # Core NDIS estimation functions (renamed)
    │  ├─ RP_privacy_analysis.py   # Privacy analysis for RP mechanisms
    │  ├─ accuracy_analysis.py     # Accuracy analyses
    │  ├─ commons.py               # Common helper functions
