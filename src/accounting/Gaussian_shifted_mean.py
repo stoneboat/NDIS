@@ -4,6 +4,7 @@ from dp_accounting import pld
 import numpy as np
 from scipy.special import erf, erfc
 from scipy.signal import fftconvolve
+from numpy.linalg import eigh
 
 def delta_via_dp_accounting(eps: float, sigma: float, k: int, mu_norm: float = 1.0) -> float:
     """
@@ -26,7 +27,6 @@ def delta_via_dp_accounting(eps: float, sigma: float, k: int, mu_norm: float = 1
     # Smallest delta achieving (eps, delta)-DP:
     return acc.get_delta(eps)
 
-
 def delta_gaussian_shift_closed_form(eps: float, sigma: float, k: int, mu_norm: float = 1.0) -> float:
     Delta = mu_norm
     m = (Delta**2) / (2.0 * sigma**2)
@@ -39,6 +39,31 @@ def delta_gaussian_shift_closed_form(eps: float, sigma: float, k: int, mu_norm: 
     termP = tail((eps - k*m) / sd)
     termQ = tail((eps + k*m) / sd)
     return float(np.maximum(0.0, termP - np.exp(eps) * termQ))
+
+
+def delta_gaussian_same_covariance_composition(eps: float, Sigma: np.ndarray, mu: np.ndarray,
+                             k: int = 1, null_tol: float = 1e-12) -> float:
+    """
+    δ_ε between N(0, Σ) and N(μ, Σ). Σ may be PSD. `k` = number of i.i.d. releases (composition).
+    For a single comparison, use k=1.
+    """
+    lam, U = eigh(Sigma)
+    pos = lam > null_tol
+    if not np.any(pos):
+        return 1.0 if np.linalg.norm(mu) > 0 else float(eps < 0)  # degenerate Σ
+
+    mu_coords = U.T @ mu
+    mu_null = mu_coords[~pos]
+    if np.linalg.norm(mu_null) > null_tol:
+        return 1.0
+
+    # Mahalanobis norm: Δ^2 = μ^T Σ^+ μ = sum( mu_i^2 / λ_i ) over support
+    Delta2 = np.sum((mu_coords[pos] ** 2) / lam[pos])
+    Delta = float(np.sqrt(Delta2))
+
+    return delta_gaussian_shift_closed_form(eps=eps, sigma=1.0, k=k, mu_norm=Delta)
+
+
 
 def _normal_cdf(x, mean, std):
     z = (x - mean) / (std * np.sqrt(2.0))
