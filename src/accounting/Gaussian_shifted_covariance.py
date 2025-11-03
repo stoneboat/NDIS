@@ -1,6 +1,70 @@
 import numpy as np
 from scipy.stats import norm
 
+def two_sided_tail(a, t):
+    """
+    T(a, t) = P(|Z - a| >= t) for Z ~ N(0,1).
+    Uses: T(a,t) = SF(a+t) + SF(t-a), where SF is 1 - CDF.
+    Works with scalars or numpy arrays (broadcasting).
+    """
+    a = np.asarray(a)
+    t = np.asarray(t)
+    return norm.sf(a + t) + norm.sf(t - a)
+
+def delta_gaussian_1d_closed_form(mu, sigma1, sigma2, eps):
+    """
+        Compute δ_{X̂,Ŷ}(ε) for 1D Gaussians with σ1 >= σ2 > 0,
+        where X̂ ~ N(0, σ1^2) and Ŷ ~ N(mu, σ2^2).
+    """
+    # Input checks
+    assert sigma1 >= sigma2 > 0, "sigma1 must be greater than sigma2 and positive."
+
+    mu = np.asarray(mu, dtype=float)
+    eps = np.asarray(eps, dtype=float)
+
+    gamma = sigma1 / sigma2  # > 1
+    gam2 = gamma * gamma
+
+    # m and r as in the derivation
+    m = mu / (sigma2 * (gam2 - 1.0))
+    num = 2.0 * eps + 2.0 * np.log(gamma) + (mu * mu) / (sigma1 * sigma1)
+    den = 1.0 - 1.0 / gam2  # = (gam2 - 1)/gam2 > 0
+    r_sq = m * m + num / den
+    # Numerical safety: r should be real and nonnegative
+    r_sq = np.maximum(r_sq, 0.0)
+    r = np.sqrt(r_sq)
+
+    # T(γ m, r/γ) - e^ε T(m, r)
+    term1 = two_sided_tail(gamma * m, r / gamma)
+    term2 = two_sided_tail(m, r)
+    delta = term1 - np.exp(eps) * term2
+
+    # Optional: clamp tiny numerical drift back into [0,1]
+    return np.clip(delta, 0.0, 1.0)
+
+
+def delta_gaussian_1d_closed_form_reverse(mu, sigma1, sigma2, eps):
+    """
+        Compute δ_{Ŷ, X̂}(ε) for 1D Gaussians with σ1 >= σ2 > 0,
+        where X̂ ~ N(0, σ1^2) and Ŷ ~ N(mu, σ2^2).
+    """
+    assert sigma1 >= sigma2 > 0
+    mu  = np.asarray(mu,  dtype=float)
+    eps = np.asarray(eps, dtype=float)
+    if np.any(eps < 0): raise ValueError("eps must be ≥ 0")
+
+    gamma = sigma1 / sigma2
+    gam2  = gamma * gamma
+    m = mu / (sigma2 * (gam2 - 1.0))
+    num = 2.0 * np.log(gamma) + (mu * mu) / (sigma1 * sigma1) - 2.0 * eps
+    den = 1.0 - 1.0 / gam2
+    r2 = m*m + num/den
+    r  = np.sqrt(np.maximum(r2, 0.0))
+
+    delta = (1.0 - np.exp(eps)) + np.exp(eps) * two_sided_tail(gamma*m, r/gamma) - two_sided_tail(m, r)
+    return np.clip(delta, 0.0, 1.0)
+
+
 def delta_gaussian_shifted_covariance_closed_form(eps: float, sigma1: float, sigma2: float) -> float:
     """
         Compute δ_{σ1^2, σ2^2}(ε) for 1D zero-mean Gaussians with σ1 >= σ2 > 0,
