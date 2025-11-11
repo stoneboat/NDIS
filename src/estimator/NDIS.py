@@ -78,6 +78,12 @@ class BasicNDISEstimator:
         sign2, logdet2 = np.linalg.slogdet(self.Sigma2)
         assert sign1 > 0 and sign2 > 0, "Σ must be SPD"
         self.c = (0.5*(logdet1 - logdet2) - 0.5*(self.mu1 - self.mu2).T @ inv_Sigma2 @ (self.mu1 - self.mu2)).item()
+    
+    def _set_Abc(self, A, b, c):
+        self.A = A
+        self.b = b
+        self.c = c
+        self.d = A.shape[0]
 
     def _estimate_standard(self, epsilon: float) -> float:
         """Estimate delta using the standard multidimensional Monte Carlo method."""

@@ -81,34 +81,6 @@ def get_constant_a(r, index, B, b):
     return a.item()
 
 
-def get_constant_a_ratio(index, B, b):
-    """ For each index, we know a is a linear function of r;
-        a(r) = c1 + c2r, where c1 = 0.5*(np.log(1 - P_diagonal - w_square/error_norm_square))
-        and c2 = 0.5*(w_square/(error_norm_square*(1-P_diagonal)) + (w_square*w_square)/(error_norm_square*w_square+error_norm_square*error_norm_square*P_diagonal*(1-P_diagonal))) here
-        this function return c2
-    """
-    raise ValueError("the function is deprecated due to the constant a's expression has bug")
-    w = get_w(B, b)
-    error_norm_square = twoNorm(get_w(B, b))**2
-    P_diagonal = calc_proj_matrix(B).diagonal()[index]
-    w_square = w[index]*w[index]
-    return 0.5*(w_square/(error_norm_square*(1-P_diagonal)) + (w_square*w_square)/(error_norm_square*w_square+error_norm_square*error_norm_square*P_diagonal*(1-P_diagonal)))
-
-
-def get_constant_a_constant(index, B, b):
-    """ For each index, we know a is a linear function of r;
-        a(r) = c1 + c2r, where c1 = 0.5*(np.log(1 - P_diagonal - w_square/error_norm_square))
-        and c2 = 0.5*(w_square/(error_norm_square*(1-P_diagonal)) + (w_square*w_square)/(error_norm_square*w_square+error_norm_square*error_norm_square*P_diagonal*(1-P_diagonal))) here
-        this function return c1
-    """
-    raise ValueError("the function is deprecated due to the constant a's expression has bug")
-    w = get_w(B, b)
-    error_norm_square = twoNorm(get_w(B, b))**2
-    P_diagonal = calc_proj_matrix(B).diagonal()[index]
-    w_square = w[index]*w[index]
-    return 0.5*(np.log(1 - P_diagonal - w_square/error_norm_square))
-
-
 def compute_multivariate_Y_pair_character(r, index, B, b):
     w = get_w(B, b)
     wi = w[index]
@@ -140,8 +112,6 @@ def compute_analytical_asymptotic_dist_delta(index, B, b, epsilon, r):
 
     w, k, non_central_parameters, m, s = gx2_params_norm_quad(neighbor_Y_mean, neighbor_Y_cov, quadratic_mat)
     p2 = gx2cdf(point, w, k, non_central_parameters, m, s, "lower")
-
-    #     print(f"point: {point} p1: {p1} p2:{p2}")
 
     return min(max(max(p1 - np.exp(epsilon) * p2, 0), p2 - np.exp(epsilon) * p1), 1)
 
