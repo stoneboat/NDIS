@@ -6,7 +6,7 @@ from scipy.special import gammaincc  # regularized upper incomplete gamma
 import mpmath as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-def radial_expectation_mc(
+def radial_expectation_mc_right(
     lambda1: float,
     lambda2: float,
     lambda3: float,
@@ -58,11 +58,7 @@ def radial_expectation_mc(
     else:
         return float(est)
 
-
-import numpy as np
-import secrets
-
-def radial_expectation_qmc(
+def radial_expectation_qmc_right(
     lambda1: float,
     lambda2: float,
     lambda3: float,
@@ -142,7 +138,7 @@ def radial_expectation_qmc(
     stderr = float(np.sqrt(batch_vals.var(ddof=1) / B))
     return mean, stderr
 
-def radial_expectation_qmc_reduced(
+def radial_expectation_qmc_reduced_right(
     lambda1: float,
     lambda2: float,
     lambda3: float,
@@ -223,7 +219,7 @@ def radial_expectation_qmc_reduced(
     return mean, stderr
 
 # ----- stable integrand, same as before -----
-def _f_reduced_at_x(x, lambda1, lambda2, lambda3, c, d, base_dps):
+def _f_reduced_at_x_right(x, lambda1, lambda2, lambda3, c, d, base_dps):
     nu = mp.mpf(d - 1) / 2
     l1 = mp.mpf(lambda1); l2 = mp.mpf(lambda2); l3 = mp.mpf(lambda3); cc = mp.mpf(c)
     one_minus_l2 = 1 - l2
@@ -238,15 +234,15 @@ def _f_reduced_at_x(x, lambda1, lambda2, lambda3, c, d, base_dps):
 def _phi(x):
     return mp.e**(-x*x/2) / mp.sqrt(2*mp.pi)
 
-def _piece_integral_task(args):
+def _piece_integral_task_right(args):
     """Worker: integrate g(x)=phi(x)f(x) on [a,b] with mpmath in its own process."""
     (a, b, lam1, lam2, lam3, c, d, dps) = args
     mp.mp.dps = dps
     def g(x):
-        return _phi(x) * _f_reduced_at_x(x, lam1, lam2, lam3, c, d, dps)
+        return _phi(x) * _f_reduced_at_x_right(x, lam1, lam2, lam3, c, d, dps)
     return mp.quad(g, [a, b])
 
-def radial_expectation_quad_adaptive_mp(
+def radial_expectation_quad_adaptive_mp_right(
     lambda1: float,
     lambda2: float,
     lambda3: float,
@@ -314,13 +310,165 @@ def radial_expectation_quad_adaptive_mp(
 
     if workers is None or workers <= 1:
         # serial fallback
-        parts = [_piece_integral_task(t) for t in tasks]
+        parts = [_piece_integral_task_right(t) for t in tasks]
     else:
         parts = []
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_piece_integral_task, t) for t in tasks]
+            futs = [ex.submit(_piece_integral_task_right, t) for t in tasks]
             for f in as_completed(futs):
                 parts.append(f.result())
 
     # 6) Sum contributions
+    return mp.fsum(parts)
+
+
+
+# ---------- workers: one for a(x)>0, one for a(x)<=0 ----------
+# The same as the _piece_integral_task function, but computed from the leverage (p) and augmented leverage (q)
+def _piece_task_pos_right(args):
+    """
+    Integrate over [a,b] when a(x)>0 throughout the interval.
+    g(x) = phi(x) * [ Q(ν, s*/2) - exp(a) (1-λ2)^(-ν) Q(ν, (1-λ2)s*/2) ],
+    with s* = -2a/λ2 > 0.
+    """
+    (aL, bR, lam1, lam2, lam3, c, nu, one_minus_l2, dps) = args
+    mp.mp.dps = dps
+
+    half = mp.mpf('0.5')
+
+    def f_pos(x):
+        # a(x) strictly > 0 on this piece
+        ax = c + half * lam1 * (x*x) - lam3 * x
+        s_star = -2*ax/lam2                  # > 0 since λ2<0 and ax>0
+        # Q regularized upper incomplete gamma
+        Q1 = mp.gammainc(nu, half*s_star, mp.inf, regularized=True)
+        Q2 = mp.gammainc(nu, half*one_minus_l2*s_star, mp.inf, regularized=True)
+        # stable scaling
+        return _phi(x) * (Q1 - mp.e**(ax - nu*mp.log(one_minus_l2)) * Q2)
+
+    return mp.quad(f_pos, [aL, bR])
+
+def _piece_task_neg_right(args):
+    """
+    Integrate over [a,b] when a(x)<=0 throughout the interval.
+    Here Q(ν,0)=1 for both terms, so
+      g(x) = phi(x) * [ 1 - exp(a) (1-λ2)^(-ν) ].
+    No gamma calls ⇒ faster and stabler.
+    """
+    (aL, bR, lam1, lam2, lam3, c, nu, one_minus_l2, dps) = args
+    mp.mp.dps = dps
+
+    half = mp.mpf('0.5')
+    log_scale_const = -nu * mp.log(one_minus_l2)  # log((1-λ2)^(-ν))
+
+    def f_neg(x):
+        ax = c + half * lam1 * (x*x) - lam3 * x   # ≤ 0 on this piece
+        return _phi(x) * (1 - mp.e**(ax + log_scale_const))
+
+    return mp.quad(f_neg, [aL, bR])
+
+# ---------- main API ----------
+def delta_pq_ls_right(p, q, d, r, eps, workers=32, sign_w=1, dps=60,
+                chunks_per_piece=2, tail_sigma=12.0):
+    """
+    Fast/stable δ_{X,Y}(ε) computed directly from (p,q,d,r,eps), with
+    sign-fixed pieces: no per-point sign checks in the integrand.
+    """
+    mp.mp.dps = int(dps)
+    if not (0 < p < q < 1):
+        raise ValueError("Require 0 < p < q < 1.")
+    if r < 0:
+        raise ValueError("Require r >= 0.")
+    if sign_w not in (-1, 1):
+        raise ValueError("sign_w should be ±1.")
+
+    # ---- map (p,q,d,r,eps) → λ's, constants ----
+    lam2 = -(q - p) / (1 - q)                                  # λ2 < 0
+    lam1 = (2*p - p*p - q) / (1 - q)
+    lam3 = sign_w * mp.sqrt(r) * (1 - p) * mp.sqrt(p) * mp.sqrt(q - p) / (1 - q)
+    c = (eps
+         + (d + 1) / 2 * mp.log(1 - p)
+         - (d / 2) * mp.log(1 - q)
+         - (r * p / 2) * ((q - p) / (1 - q)))
+    one_minus_l2 = 1 - lam2
+    nu = mp.mpf(d - 1) / 2
+
+    # ---- determine kink locations: a(x)=0 roots ----
+    # a(x) = c + 0.5*λ1 x^2 - λ3 x  =>  λ1 x^2 - 2λ3 x + 2c = 0
+    A = mp.mpf(lam1)
+    B = -2 * mp.mpf(lam3)
+    C = 2 * mp.mpf(c)
+    disc = B*B - 4*A*C
+
+    L = mp.mpf(tail_sigma)
+    pts = [-L]
+
+    if A == 0:
+        # a(x) linear: a(x) = c - λ3 x. One root at x = c/λ3 if λ3 != 0.
+        if lam3 != 0:
+            x0 = c / lam3
+            if -L < x0 < L:
+                pts.append(x0)
+    else:
+        if disc > 0:
+            sqrtD = mp.sqrt(disc)
+            x1 = (-B - sqrtD) / (2*A)
+            x2 = (-B + sqrtD) / (2*A)
+            if -L < x1 < L: pts.append(x1)
+            if -L < x2 < L: pts.append(x2)
+        elif disc == 0:
+            x0 = (-B) / (2*A)
+            if -L < x0 < L: pts.append(x0)
+
+    pts.append(L)
+    pts = sorted(pts)
+
+    # ---- build sub-intervals, tagging each with sign(a) on the piece ----
+    pieces = []
+    half = mp.mpf('0.5')
+    for i in range(len(pts)-1):
+        aL, bR = pts[i], pts[i+1]
+        # pick a midpoint safely inside (handle degenerate tiny intervals)
+        xm = (aL + bR) / 2
+        axm = c + half * lam1 * (xm*xm) - lam3 * xm
+        is_pos = (axm > 0)
+        # sub-split for parallelism
+        if chunks_per_piece <= 1:
+            pieces.append((aL, bR, is_pos))
+        else:
+            for k in range(chunks_per_piece):
+                t0 = mp.mpf(k) / chunks_per_piece
+                t1 = mp.mpf(k+1) / chunks_per_piece
+                subL = aL + (bR - aL) * t0
+                subR = aL + (bR - aL) * t1
+                # keep the same sign tag for the whole piece (safe between roots)
+                pieces.append((subL, subR, is_pos))
+
+    # ---- launch workers with sign-specific kernels ----
+    tasks_pos, tasks_neg = [], []
+    for (aL, bR, is_pos) in pieces:
+        payload = (aL, bR, lam1, lam2, lam3, c, nu, one_minus_l2, dps)
+        if is_pos:
+            tasks_pos.append(payload)
+        else:
+            tasks_neg.append(payload)
+
+    parts = []
+
+    # run serially if workers<=1 for reproducibility
+    if not workers or workers <= 1:
+        for t in tasks_pos:
+            parts.append(_piece_task_pos_right(t))
+        for t in tasks_neg:
+            parts.append(_piece_task_neg_right(t))
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = []
+            for t in tasks_pos:
+                futs.append(ex.submit(_piece_task_pos_right, t))
+            for t in tasks_neg:
+                futs.append(ex.submit(_piece_task_neg_right, t))
+            for f in as_completed(futs):
+                parts.append(f.result())
+
     return mp.fsum(parts)
