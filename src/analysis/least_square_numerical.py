@@ -669,3 +669,199 @@ def radial_expectation_quad_adaptive_mp_left(
                 "using real part only"
             )
     return mp.re(result)
+
+
+def _piece_task_left_neg(args):
+    """
+    Integrate over [aL,bR] for the case 0 < λ2 < 1, on a piece where a(x) < 0.
+    Here we use the 'pos' radial lemma:
+
+        f(x) = [1 - Q(ν, s*/2)] - exp(a) (1-λ2)^(-ν) [1 - Q(ν, (1-λ2)s*/2)],
+
+    with s* = -2 a(x) / λ2 > 0 when a(x)<0, ν = (d-1)/2.
+
+    We integrate g(x) = φ(x) f(x).
+    """
+    (aL, bR, lam1, lam2, lam3, c, nu, one_minus_l2, dps) = args
+    mp.mp.dps = dps
+
+    half = mp.mpf('0.5')
+    log_one_minus_l2 = mp.log(one_minus_l2)
+
+    def f_neg(x):
+        # a(x) should be < 0 on this piece (up to numerical wiggles)
+        ax = c + half * lam1 * (x*x) - lam3 * x
+        if ax >= 0:
+            # In theory this shouldn't happen if the roots are correct,
+            # but for safety we treat it as zero contribution.
+            return mp.mpf('0')
+
+        s_star = -2 * ax / lam2  # > 0 since λ2>0 and ax<0
+        # regularized upper incomplete gamma Q(ν,z)
+        Q1 = mp.gammainc(nu, half * s_star, mp.inf, regularized=True)
+        Q2 = mp.gammainc(nu, half * one_minus_l2 * s_star,
+                         mp.inf, regularized=True)
+
+        # (1 - Q1) - exp(a) (1-λ2)^(-ν) (1 - Q2)
+        log_scale = ax - nu * log_one_minus_l2
+        return _phi(x) * ((1 - Q1) - mp.e**(log_scale) * (1 - Q2))
+
+    result = mp.quad(f_neg, [aL, bR])
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):
+            warnings.warn(
+                f"Result has non-negligible imaginary part: {imag_part:.6e}, "
+                "using real part only"
+            )
+    return mp.re(result)
+
+
+def delta_pq_ls_left(
+    p: float,
+    q: float,
+    d: int,
+    r: float,
+    eps: float,
+    workers: int = 32,
+    sign_w: int = 1,
+    dps: int = 60,
+    chunks_per_piece: int = 2,
+    tail_sigma: float = 12.0,
+):
+    """
+    Fast/stable δ_{Y,X}(ε) for the 'left' side (0 < λ2 < 1) computed directly
+    from (p,q,d,r,eps), using the radial reduction lemma with sign-fixed pieces.
+
+    Here:
+      p = leverage ∈ (0,1),
+      q = augmented leverage ∈ (p,1),
+      r >= 0 is the (scaled) regularization parameter,
+      sign_w = sgn(w_i) ∈ {±1} controls the sign of λ3.
+    """
+    mp.mp.dps = int(dps)
+
+    if not (0 < p < q < 1):
+        raise ValueError("Require 0 < p < q < 1.")
+    if r < 0:
+        raise ValueError("Require r >= 0.")
+    if sign_w not in (-1, 1):
+        raise ValueError("sign_w should be ±1.")
+
+    p_mp = mp.mpf(p)
+    q_mp = mp.mpf(q)
+
+    # ---- map (p,q,d,r,eps) → λ's, constants ----
+    # λ2 ∈ (0,1)
+    lam2 = (q_mp - p_mp) / (1 - p_mp)
+
+    # λ1 = (q - 2p + p^2)/(1-p)^2
+    lam1 = (q_mp - 2*p_mp + p_mp*p_mp) / ((1 - p_mp)**2)
+
+    # λ3 = -sgn(w_i) * sqrt(r p(q-p)) sqrt(1-q)/(1-p)^2
+    if r == 0:
+        lam3 = mp.mpf('0')
+    else:
+        lam3 = (
+            -sign_w
+            * mp.sqrt(r)
+            * mp.sqrt(p_mp * (q_mp - p_mp))
+            * mp.sqrt(1 - q_mp)
+            / ((1 - p_mp)**2)
+        )
+
+    # c = eps + 0.5 [ d ln(1-q) - (d+1) ln(1-p) ] - 0.5 r p (q-p)/(1-p)^2
+    c = (
+        mp.mpf(eps)
+        + mp.mpf(d) / 2 * mp.log(1 - q_mp)
+        - mp.mpf(d + 1) / 2 * mp.log(1 - p_mp)
+        - mp.mpf('0.5') * mp.mpf(r) * p_mp * (q_mp - p_mp) / ((1 - p_mp)**2)
+    )
+
+    one_minus_l2 = 1 - lam2    # (1-λ2) = (1-q)/(1-p)
+    nu = mp.mpf(d - 1) / 2     # (d-1)/2
+
+    # ---- determine kink locations: roots of a(x) = 0 ----
+    # a(x) = c + 0.5*λ1 x^2 - λ3 x  ⇒  λ1 x^2 - 2λ3 x + 2c = 0
+    A = mp.mpf(lam1)
+    B = -2 * mp.mpf(lam3)
+    C = 2 * mp.mpf(c)
+    disc = B*B - 4*A*C
+
+    L = mp.mpf(tail_sigma)
+    pts = [-L]
+
+    if A == 0:
+        # a(x) linear: a(x) = c - λ3 x. One root at x = c/λ3 if λ3 != 0.
+        if lam3 != 0:
+            x0 = c / lam3
+            if -L < x0 < L:
+                pts.append(x0)
+    else:
+        if disc > 0:
+            sqrtD = mp.sqrt(disc)
+            x1 = (-B - sqrtD) / (2*A)
+            x2 = (-B + sqrtD) / (2*A)
+            if -L < x1 < L:
+                pts.append(x1)
+            if -L < x2 < L:
+                pts.append(x2)
+        elif disc == 0:
+            x0 = (-B) / (2*A)
+            if -L < x0 < L:
+                pts.append(x0)
+
+    pts.append(L)
+    pts = sorted(pts)
+
+    # ---- build sub-intervals, keeping only those where a(x) < 0 ----
+    pieces_neg = []
+    half = mp.mpf('0.5')
+
+    for i in range(len(pts) - 1):
+        aL, bR = pts[i], pts[i+1]
+        # midpoint to determine sign of a(x) on this piece
+        xm = (aL + bR) / 2
+        axm = c + half * lam1 * (xm*xm) - lam3 * xm
+        if axm >= 0:
+            # on this whole piece, a(x) >= 0 ⇒ integrand is zero; skip it
+            continue
+
+        if chunks_per_piece <= 1:
+            pieces_neg.append((aL, bR))
+        else:
+            # sub-split for more parallelism
+            for k in range(chunks_per_piece):
+                t0 = mp.mpf(k) / chunks_per_piece
+                t1 = mp.mpf(k + 1) / chunks_per_piece
+                subL = aL + (bR - aL) * t0
+                subR = aL + (bR - aL) * t1
+                pieces_neg.append((subL, subR))
+
+    # ---- launch workers on negative-a pieces ----
+    tasks_neg = [
+        (aL, bR, lam1, lam2, lam3, c, nu, one_minus_l2, dps)
+        for (aL, bR) in pieces_neg
+    ]
+
+    parts = []
+
+    if not workers or workers <= 1:
+        # serial execution
+        for t in tasks_neg:
+            parts.append(_piece_task_left_neg(t))
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_piece_task_left_neg, t) for t in tasks_neg]
+            for f in as_completed(futs):
+                parts.append(f.result())
+
+    result = mp.fsum(parts)
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):
+            warnings.warn(
+                f"Result has non-negligible imaginary part: {imag_part:.6e}, "
+                "using real part only"
+            )
+    return mp.re(result)
