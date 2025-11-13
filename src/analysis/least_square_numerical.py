@@ -1,12 +1,13 @@
 import numpy as np
 from numpy.random import MT19937
 import secrets
+import warnings
 from scipy.stats import qmc, norm
 from scipy.special import gammaincc  # regularized upper incomplete gamma
 import mpmath as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-def radial_expectation_mc_right(
+def radial_expectation_mc(
     lambda1: float,
     lambda2: float,
     lambda3: float,
@@ -58,7 +59,7 @@ def radial_expectation_mc_right(
     else:
         return float(est)
 
-def radial_expectation_qmc_right(
+def radial_expectation_qmc(
     lambda1: float,
     lambda2: float,
     lambda3: float,
@@ -240,7 +241,13 @@ def _piece_integral_task_right(args):
     mp.mp.dps = dps
     def g(x):
         return _phi(x) * _f_reduced_at_x_right(x, lam1, lam2, lam3, c, d, dps)
-    return mp.quad(g, [a, b])
+    result = mp.quad(g, [a, b])
+    # Extract real part and ensure we return a real number
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):
+            warnings.warn(f"Result has non-negligible imaginary part: {imag_part:.6e}, using real part only")
+    return mp.re(result)
 
 def radial_expectation_quad_adaptive_mp_right(
     lambda1: float,
@@ -319,7 +326,14 @@ def radial_expectation_quad_adaptive_mp_right(
                 parts.append(f.result())
 
     # 6) Sum contributions
-    return mp.fsum(parts)
+    result = mp.fsum(parts)
+    # Extract real part and ensure we return a real number
+    # If imaginary part is significant, it indicates a numerical issue
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):  # Warn if imaginary part is significant
+            warnings.warn(f"Result has non-negligible imaginary part: {imag_part:.6e}, using real part only")
+    return mp.re(result)
 
 
 
@@ -346,7 +360,13 @@ def _piece_task_pos_right(args):
         # stable scaling
         return _phi(x) * (Q1 - mp.e**(ax - nu*mp.log(one_minus_l2)) * Q2)
 
-    return mp.quad(f_pos, [aL, bR])
+    result = mp.quad(f_pos, [aL, bR])
+    # Extract real part and ensure we return a real number
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):
+            warnings.warn(f"Result has non-negligible imaginary part: {imag_part:.6e}, using real part only")
+    return mp.re(result)
 
 def _piece_task_neg_right(args):
     """
@@ -365,7 +385,13 @@ def _piece_task_neg_right(args):
         ax = c + half * lam1 * (x*x) - lam3 * x   # ≤ 0 on this piece
         return _phi(x) * (1 - mp.e**(ax + log_scale_const))
 
-    return mp.quad(f_neg, [aL, bR])
+    result = mp.quad(f_neg, [aL, bR])
+    # Extract real part and ensure we return a real number
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):
+            warnings.warn(f"Result has non-negligible imaginary part: {imag_part:.6e}, using real part only")
+    return mp.re(result)
 
 # ---------- main API ----------
 def delta_pq_ls_right(p, q, d, r, eps, workers=32, sign_w=1, dps=60,
@@ -471,4 +497,175 @@ def delta_pq_ls_right(p, q, d, r, eps, workers=32, sign_w=1, dps=60,
             for f in as_completed(futs):
                 parts.append(f.result())
 
-    return mp.fsum(parts)
+    result = mp.fsum(parts)
+    # Extract real part and ensure we return a real number
+    # If imaginary part is significant, it indicates a numerical issue
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):  # Warn if imaginary part is significant
+            warnings.warn(f"Result has non-negligible imaginary part: {imag_part:.6e}, using real part only")
+    return mp.re(result)
+
+def _f_reduced_at_x_left(x, lambda1, lambda2, lambda3, c, d, base_dps):
+    """
+    Radial reduction integrand for the case 0 < lambda2 < 1.
+
+    Implements:
+        f(x) = [1 - Q(ν, s*/2)] - exp(a) (1-λ2)^(-ν) [1 - Q(ν, (1-λ2)s*/2)],
+    where
+        ν = (d-1)/2,
+        a(x) = c + 0.5*λ1 x^2 - λ3 x,
+        s* = max(0, -2 a(x)/λ2),
+    and Q is the regularized upper incomplete gamma.
+    """
+    nu = mp.mpf(d - 1) / 2
+    l1 = mp.mpf(lambda1)
+    l2 = mp.mpf(lambda2)
+    l3 = mp.mpf(lambda3)
+    cc = mp.mpf(c)
+    one_minus_l2 = 1 - l2
+
+    with mp.workdps(base_dps + 40):
+        a = cc + mp.mpf('0.5') * l1 * (x * x) - l3 * x
+
+        # For 0 < λ2 < 1, the positive part is on [0, s*] with s* = max(0, -2a/λ2).
+        if a >= 0:
+            # Then s* <= 0, so the positive region has measure zero → contribution 0.
+            return mp.mpf('0')
+
+        s_star = -2 * a / l2   # > 0 since a < 0 and λ2 > 0
+
+        # Q(ν, z) = regularized upper incomplete gamma
+        Q1 = mp.gammainc(nu, mp.mpf('0.5') * s_star, mp.inf, regularized=True)
+        log_scale = a - nu * mp.log(one_minus_l2)
+        Q2 = mp.gammainc(nu, mp.mpf('0.5') * one_minus_l2 * s_star,
+                         mp.inf, regularized=True)
+
+        # (1 - Q1) - exp(a) (1-λ2)^(-ν) (1 - Q2)
+        term1 = 1 - Q1
+        term2 = mp.e**(log_scale) * (1 - Q2)
+        return term1 - term2
+
+
+def _piece_integral_task_left(args):
+    """Worker: integrate g(x)=phi(x) f_pos(x) on [a,b] with mpmath in its own process."""
+    (a, b, lam1, lam2, lam3, c, d, dps) = args
+    mp.mp.dps = dps
+
+    def g(x):
+        return _phi(x) * _f_reduced_at_x_left(x, lam1, lam2, lam3, c, d, dps)
+
+    result = mp.quad(g, [a, b])
+
+    # Extract real part and ensure we return a real number
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):
+            warnings.warn(
+                f"Result has non-negligible imaginary part: {imag_part:.6e}, "
+                "using real part only"
+            )
+    return mp.re(result)
+
+
+def radial_expectation_quad_adaptive_mp_left(
+    lambda1: float,
+    lambda2: float,
+    lambda3: float,
+    c: float,
+    d: int,
+    dps: int = 100,
+    workers: int = 4,
+    chunks_per_piece: int = 2,
+    tail_sigma: float = 12.0,
+    jitter: float = 0.0,
+):
+    """
+    Parallel, deterministic integral of E[f(X)], X~N(0,1), for the case 0 < lambda2 < 1,
+    splitting at the kinks of a(x) and distributing sub-intervals across processes.
+
+    - workers: # of processes to use
+    - chunks_per_piece: split each main piece into this many equal sub-intervals
+    - tail_sigma: integrate only within [-L, L], with L = tail_sigma; outside mass is tiny
+                  (phi tails beyond ~10σ are < 1e-23)
+    """
+    mp.mp.dps = dps
+
+    # 1) Find kink locations (roots of a(x) = c + 0.5*λ1 x^2 - λ3 x)
+    assert 0 < lambda2 < 1, "lambda2 must be between 0 and 1"
+    l1 = mp.mpf(lambda1)
+    l3 = mp.mpf(lambda3)
+    cc = mp.mpf(c)
+    A = l1
+    B = -2 * l3
+    C = 2 * cc
+    disc = B * B - 4 * A * C
+
+    # 2) Build main interval endpoints on a finite window [-L, L]
+    L = mp.mpf(tail_sigma)
+    pts = [-L]
+    if disc > 0:
+        sqrtD = mp.sqrt(disc)
+        x_minus = (-B - sqrtD) / (2 * A)
+        x_plus = (-B + sqrtD) / (2 * A)
+        # keep only kinks that lie within [-L, L]
+        if -L < x_minus < L:
+            pts.append(x_minus)
+        if -L < x_plus < L:
+            pts.append(x_plus)
+    elif disc == 0:
+        x0 = (-B) / (2 * A)
+        if -L < x0 < L:
+            pts.append(x0)
+    pts.append(L)
+    pts = sorted(pts)
+
+    # 3) Optionally jitter away from exact kinks (helps some integrators)
+    if jitter and jitter > 0:
+        j = mp.mpf(jitter)
+        pts = (
+            [pts[0]] +
+            [p - j if i % 2 == 1 else p + j
+             for i, p in enumerate(pts[1:-1], start=1)] +
+            [pts[-1]]
+        )
+        pts = sorted(pts)
+
+    # 4) Split each main piece into sub-intervals for more parallelism
+    subints = []
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        if chunks_per_piece <= 1:
+            subints.append((a, b))
+        else:
+            # equal splits in x-space (works fine here since phi decays in tails)
+            for k in range(chunks_per_piece):
+                t0 = mp.mpf(k) / chunks_per_piece
+                t1 = mp.mpf(k + 1) / chunks_per_piece
+                subints.append((a + (b - a) * t0, a + (b - a) * t1))
+
+    # 5) Launch processes
+    tasks = [(a, b, lambda1, lambda2, lambda3, c, d, dps) for (a, b) in subints]
+
+    if workers is None or workers <= 1:
+        # serial fallback
+        parts = [_piece_integral_task_left(t) for t in tasks]
+    else:
+        parts = []
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_piece_integral_task_left, t) for t in tasks]
+            for f in as_completed(futs):
+                parts.append(f.result())
+
+    # 6) Sum contributions
+    result = mp.fsum(parts)
+
+    # Extract real part and ensure we return a real number
+    if mp.im(result) != 0:
+        imag_part = abs(mp.im(result))
+        if imag_part > mp.mpf('1e-10'):
+            warnings.warn(
+                f"Result has non-negligible imaginary part: {imag_part:.6e}, "
+                "using real part only"
+            )
+    return mp.re(result)
