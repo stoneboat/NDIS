@@ -209,9 +209,16 @@ def get_neighbors_index_list(B, b):
     return np.array([i for i in range(A.shape[0])])
 
 
-def data_normalize_by_features(B, b):
+def data_normalize_by_features(B, b, clip_norm = None):
     X = preprocessing.normalize(B, axis=0)
     y = preprocessing.normalize(b.reshape((-1, 1)), axis=0).ravel()
+
+    if clip_norm is not None:
+        assert clip_norm > 0, "ERR: clip_norm must be positive"
+        A = concatenate_B_b(X, y)
+        A = A / np.linalg.norm(A, 2) * clip_norm
+        X, y = split_to_B_b(A)
+
     return X, y
 
 
@@ -244,11 +251,6 @@ def get_neighbor_w(index, B, b):
     neighbor_B = get_neighbor_B(index, B)
     neighbor_b = get_neighbor_b(index, b)
     return get_w(neighbor_B, neighbor_b)
-
-
-# def compute_projection_diagonal_elements(B):
-#     """Let P be projection matrix of B, return the diagonal elements of the projection matrix for B"""
-#     return calc_proj_matrix(B).diagonal()
 
 
 def compute_projection_diagonal_elements(B):

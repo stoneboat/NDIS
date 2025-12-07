@@ -4,11 +4,15 @@
 import numpy as np
 import secrets
 from numpy.random import MT19937, RandomState
+import mpmath as mp
 
-from analysis.commons import compute_xopt, split_to_B_b, get_w
+from analysis.commons import compute_xopt, split_to_B_b, get_w, data_normalize_by_features
 from LS_mechanisms.optim_LS import lev_evaluate_ALS
 from RP_mechanisms.optim_RP_DP import OptimalRP_mech
+from analysis.least_square_numerical import delta_pq_ls_left
 
+def compute_shrinkage_lev(l, original_lev, sigma):
+    return original_lev * (l**2) / (sigma**2*original_lev + l**2)
 
 class ALS:
     def __init__(self, kwargs):
@@ -94,8 +98,10 @@ class OptimalLS_mech:
             mid_aug_lev = min(self.l ** 2*2/(mid ** 2), 1-1e-8)
             mid_lev = min(self.l ** 2/(mid ** 2), 1-1e-8)
 
-            if lev_evaluate_ALS(self.r, self.d, mid_lev, mid_aug_lev, epsilon,
-                            cyclimits=self.cyclimits, atol=self.atol) < delta:
+            tmp_delta = lev_evaluate_ALS(self.r, self.d, mid_lev, mid_aug_lev, epsilon,
+                            cyclimits=self.cyclimits, atol=self.atol)
+            
+            if tmp_delta < delta:
                 high = mid
             else:
                 low = mid
@@ -113,6 +119,149 @@ class OptimalLS_mech:
 
         X = np.vstack((self.D, sigma * np.eye(self.d+1)))
         B, b = split_to_B_b(X)
+
+        xopt = compute_xopt(B, b)
+        w = get_w(B, b)
+        cov = (np.linalg.norm(w) ** 2 / self.r) * np.linalg.inv(B.T @ B)
+
+        samples = self.rng.multivariate_normal(xopt, cov=cov, size=num_samples)
+
+        return samples
+
+class variantLS_mech:
+    def __init__(self, kwargs):
+        self.D = kwargs["database"]
+        self.l = kwargs["l2"]
+
+
+        if "lev_upper_bound" in kwargs:
+            self.lev_upper_bound = kwargs["lev_upper_bound"]
+        else:
+            self.lev_upper_bound = 1
+
+        self.B, self.b = split_to_B_b(self.D)
+
+        self.B, self.b = data_normalize_by_features(self.B, self.b)
+        self.b = self.b.reshape((-1, 1))
+
+        assert isinstance(self.D, np.ndarray), "ERR: required np.ndarray type"
+        assert self.D.ndim == 2, f"ERR: database input is in wrong shape, required 2 dimensions"
+
+        self.r = kwargs["r"]
+        self.d = self.D.shape[1]-1
+        self.n = self.D.shape[0]
+
+        # Prepare the randomness
+        seed = secrets.randbits(128)
+        self.rng = RandomState(MT19937(seed))
+    
+    def find_minimal_sigma(self, epsilon, delta, low=1e-3, high=1e2, tol=1e-3):
+
+        print(f" leverage upper bound is {self.lev_upper_bound}")
+        # Ensure that the function value at the lower bound is less than delta
+        low_lev= min(compute_shrinkage_lev(self.l, self.lev_upper_bound, low), 1-1e-8)
+        low_aug_lev = min(2 * low_lev, 1-1e-8)
+        
+        if float(delta_pq_ls_left(p = low_lev, q = low_aug_lev, d = self.d, r = self.r, eps = epsilon, workers = 2)) < delta:
+            raise ValueError("Please re-choose your down side")
+
+        high_lev= min(compute_shrinkage_lev(self.l, self.lev_upper_bound, high), 1-1e-8)
+        high_aug_lev = min(2 * high_lev, 1-1e-8)
+        if float(delta_pq_ls_left(p = high_lev, q = high_aug_lev, d = self.d, r = self.r, eps = epsilon, workers = 2)) > delta:
+            raise ValueError("Please re-choose your up side")
+
+        # Binary search
+        while high - low > tol:
+            mid = (low + high) / 2
+            mid_lev = min(compute_shrinkage_lev(self.l, self.lev_upper_bound, mid), 1-1e-8)
+            mid_aug_lev = min(2 * mid_lev, 1-1e-8)
+
+            tmp_delta = float(delta_pq_ls_left(p = mid_lev, q = mid_aug_lev, d = self.d, r = self.r, eps = epsilon, workers = 2))
+
+            print(f"current sigma is {mid}, and the corresponding delta is {tmp_delta}; leverage is {mid_lev}, augmented leverage is {mid_aug_lev}")
+            print(f"ratio is {mid_lev/compute_shrinkage_lev(self.l, 1, mid)}")
+
+            if tmp_delta < delta:
+                high = mid
+            else:
+                low = mid
+
+        return (low + high) / 2
+
+    def find_sigma_with_fixed_rho(self, epsilon, delta, rho, low=1e-3, high=1e2, tol=1e-2):
+        # Ensure that the function value at the lower bound is less than delta
+
+        assert rho > 0, "ERR: rho must be greater than 0"
+
+        residual_share = 1/(1+rho**2)
+        low_lev = min(self.l**2/(low ** 2 + self.l**2), 1-residual_share-1e-8)
+        low_lev = max(low_lev, 1e-8)
+        low_aug_lev = residual_share + low_lev
+
+        if float(delta_pq_ls_left(p = low_lev, q = low_aug_lev, d = self.d, r = self.r, eps = epsilon, workers = 2)) < delta:
+            raise ValueError("Please re-choose your down side")
+
+        high_lev = min(self.l**2/(high ** 2 + self.l**2), 1-1e-8)
+        high_aug_lev = residual_share + high_lev
+
+        if float(delta_pq_ls_left(p = high_lev, q = high_aug_lev, d = self.d, r = self.r, eps = epsilon, workers = 2)) > delta:
+            raise ValueError("Please re-choose your up side")
+
+        # Binary search
+        while high - low > tol:
+            mid = (low + high) / 2
+            mid_lev = min(self.l**2/(mid ** 2 + self.l**2), 1-1e-8)
+            mid_aug_lev = residual_share + mid_lev
+
+            tmp_delta = float(delta_pq_ls_left(p = mid_lev, q = mid_aug_lev, d = self.d, r = self.r, eps = epsilon, workers = 2))
+
+            if tmp_delta < delta:
+                high = mid
+            else:
+                low = mid
+
+        return (low + high) / 2
+    
+    def gen_samples(self, num_samples, epsilon, delta):
+        seed = secrets.randbits(128)
+        self.rng = RandomState(MT19937(seed))
+        return self._gen_samples(epsilon, delta, num_samples)
+
+    def _gen_samples(self, epsilon, delta, num_samples):
+        num_samples = int(num_samples)
+        sigma = self.find_minimal_sigma(epsilon, delta)
+
+        X = np.vstack((self.D, sigma * np.eye(self.d+1)))
+        B, b = split_to_B_b(X)
+
+        xopt = compute_xopt(B, b)
+        w = get_w(B, b)
+        cov = (np.linalg.norm(w) ** 2 / self.r) * np.linalg.inv(B.T @ B)
+
+        samples = self.rng.multivariate_normal(xopt, cov=cov, size=num_samples)
+
+        return samples
+
+    def gen_samples_with_fixed_rho(self, num_samples, epsilon, delta, rho):
+        seed = secrets.randbits(128)
+        self.rng = RandomState(MT19937(seed))
+        return self._gen_samples_with_fixed_rho(epsilon, delta, num_samples, rho)
+
+    def _gen_samples_with_fixed_rho(self, epsilon, delta, num_samples, rho):
+        num_samples = int(num_samples)
+        sigma = self.find_sigma_with_fixed_rho(epsilon, delta, rho)
+
+        B = np.vstack([
+            self.B,                      
+            sigma * np.eye(self.d),   
+            np.zeros((1, self.d))        
+        ])    
+
+        b = np.vstack([
+            self.b,                       
+            np.zeros((self.d, 1)),       
+            np.array([[rho]])        
+        ])                           
 
         xopt = compute_xopt(B, b)
         w = get_w(B, b)
