@@ -1,6 +1,40 @@
 import numpy as np
 from scipy.special import gammaincc, gamma
 
+
+def _compute_gamma_delta(s, t0, rho, eps):
+    """
+    Helper function to compute δ using gamma functions.
+    
+    Computes δ = (Γ(s, t0/2) - exp(ε) * Γ(s, ρ*t0/2)) / Γ(s)
+    where Γ(s, x) is the upper incomplete gamma function.
+    
+    Parameters
+    ----------
+    s : float
+        Shape parameter (typically r/2.0)
+    t0 : float
+        Threshold parameter
+    rho : float
+        Scaling ratio
+    eps : float
+        Privacy parameter (epsilon)
+    
+    Returns
+    -------
+    float
+        Delta value, clamped to [0, 1]
+    """
+    # Upper incomplete gamma Γ(s, x):
+    # Γ(s, x) = gammaincc(s, x) * gamma(s) in SciPy
+    G_total = gamma(s)
+    G_t0_over_2 = gammaincc(s, t0 / 2.0) * G_total
+    G_rho_t0_over_2 = gammaincc(s, (rho * t0) / 2.0) * G_total
+    
+    delta = (G_t0_over_2 - np.exp(eps) * G_rho_t0_over_2) / G_total
+    return max(0.0, min(1.0, float(delta)))
+
+
 def gaussian_projection_ndis_delta_1d(D, index_sets, r, eps, reg_param1=0, reg_param2=0):
     """
     Compute δ_{X,Y}(ε) for Gaussian random projection D^T@G
@@ -37,14 +71,7 @@ def gaussian_projection_ndis_delta_1d(D, index_sets, r, eps, reg_param1=0, reg_p
     # t0 = 2 * (eps + (r/2) * log(rho)) / (rho - 1)
     t0 = 2.0 * (eps + 0.5 * r * np.log(rho)) / (rho - 1.0)
 
-    # Upper incomplete gamma Γ(s, x):
-    # Γ(s, x) = gammaincc(s, x) * gamma(s) in SciPy
-    G_total = gamma(s)
-    G_t0_over_2 = gammaincc(s, t0 / 2.0) * G_total
-    G_rho_t0_over_2 = gammaincc(s, (rho * t0) / 2.0) * G_total
-
-    delta = (G_t0_over_2 - np.exp(eps) * G_rho_t0_over_2) / G_total
-    return max(0.0, min(1.0, float(delta)))
+    return _compute_gamma_delta(s, t0, rho, eps)
 
 
 def gaussian_projection_ndis_delta(D, index, r, eps):
@@ -76,14 +103,30 @@ def gaussian_projection_ndis_delta(D, index, r, eps):
     # t0 = 2 * (eps + (r/2) * log(rho)) / (rho - 1)
     t0 = 2.0 * (eps + 0.5 * r * np.log(rho)) / (rho - 1.0)
 
-    # Upper incomplete gamma Γ(s, x):
-    # Γ(s, x) = gammaincc(s, x) * gamma(s) in SciPy
-    G_total = gamma(s)
-    G_t0_over_2 = gammaincc(s, t0 / 2.0) * G_total
-    G_rho_t0_over_2 = gammaincc(s, (rho * t0) / 2.0) * G_total
+    return _compute_gamma_delta(s, t0, rho, eps)
 
-    delta = (G_t0_over_2 - np.exp(eps) * G_rho_t0_over_2) / G_total
-    return max(0.0, min(1.0, float(delta)))
+
+def isotropic_gaussian_scaling(t, r, eps):
+    """
+    Compute δ_{X,Y}(ε) between Gaussian X and t*X, where X is a isotropic Gaussian random variable.
+    
+    t is between 0 and 1.
+    """
+
+    assert t >= 0 and t <= 1, "t must be between 0 and 1"
+    assert eps >= 0, "eps must be >= 0"
+    assert r > 0, "r must be a positive integer"
+
+    s = r / 2.0  # shape parameter for chi^2_r related gamma
+    rho = 1 / (t**2)
+
+    if np.isclose(rho, 1.0):
+        return 0
+
+    # t0 = 2 * (eps + (r/2) * log(rho)) / (rho - 1)
+    t0 = 2.0 * (eps + 0.5 * r * np.log(rho)) / (rho - 1.0)
+    return _compute_gamma_delta(s, t0, rho, eps)
+
 
 
 def rp_mean_cov_matrix(D, r, full_vec_cov=False):
