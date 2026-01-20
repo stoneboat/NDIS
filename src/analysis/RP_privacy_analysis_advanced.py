@@ -42,7 +42,11 @@ def _compute_gamma_delta(s, t0, rho, eps, dps=80):
 
     return float(delta)
 
-
+def compute_IS(epsilon, leverage, r):
+    s = r / 2.0
+    rho = 1.0 / (1 - leverage)
+    t0 = 2 * (epsilon + r/2.0 * np.log(rho)) / (rho - 1)
+    return _compute_gamma_delta(s, t0, rho, epsilon)
 
 def gaussian_projection_ndis_delta_1d(D, index_sets, r, eps, reg_param1=0, reg_param2=0):
     """

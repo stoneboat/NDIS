@@ -3,16 +3,11 @@ import numpy as np
 import secrets
 from numpy.random import MT19937, RandomState
 
-from RP_mechanisms.optim_RP import compute_IS
+from analysis.RP_privacy_analysis_advanced import compute_IS
 
 def compute_largest_l2(D):
-    l = 0
-    n = D.shape[0]
-    for index in np.arange(n):
-        v = D[index].copy().reshape(-1, 1)
-        if np.linalg.norm(v) > l:
-            l = np.linalg.norm(v)
-
+    row_norms = np.linalg.norm(D, axis=1)
+    l = np.max(row_norms)
     return l
 
 class OptimalRP_mech:
@@ -30,9 +25,8 @@ class OptimalRP_mech:
         # Prepare the randomness
         seed = secrets.randbits(128)
         self.rng = RandomState(MT19937(seed))
-
-
-    def find_minimal_sigma(self, epsilon, delta, low=1e-10, high=1-1e-8, tol=1e-8):
+    
+    def compute_leverage_upper_bound(self, epsilon, delta, low=1e-10, high=1-1e-8, tol=1e-8):
         # Ensure that the function value at the lower bound is less than delta
         if compute_IS(epsilon, low, self.r) > delta:
             raise ValueError("Please re-choose your down side")
@@ -49,8 +43,12 @@ class OptimalRP_mech:
             else:
                 low = mid
 
-        s_bar = (low + high) / 2
+        leverage_upper_bound = (low + high) / 2
+        return leverage_upper_bound
 
+
+    def find_minimal_sigma(self, epsilon, delta, low=1e-10, high=1-1e-8, tol=1e-8):
+        s_bar = self.compute_leverage_upper_bound(epsilon, delta, low, high, tol)
         return self.l*np.sqrt(1/s_bar)
 
     def gen_samples(self, num_samples, epsilon, delta):
@@ -75,30 +73,33 @@ class OptimalRP_mech:
         return final_matrix
 
 
-class clipping_RP_mech(OptimalRP_mech):
-    def compute_DP_LSV(self):
-        # Compute the eigenvalues
-        eigenvalues = np.linalg.eigvals(self.D.T@self.D)
+class one_short_PTR_RP_mech(OptimalRP_mech):
+    def find_minimal_sigma(self, epsilon, delta, ratio=0.05, low=1e-10, high=1-1e-8, tol=1e-8):
+        s_bar = self.compute_leverage_upper_bound(epsilon*ratio, delta*ratio, low, high, tol)
+        eigenvalues = np.linalg.eigvalsh(self.D.T @ self.D)  # Use eigvalsh for symmetric matrices
+        lam_min  = np.min(eigenvalues)
 
-        # Find the smallest eigenvalue
-        lsv = np.sqrt(np.min(eigenvalues))
+        l = compute_largest_l2(self.D)
+        eps_T = (1-ratio) * epsilon
+        delta_fail = (1-ratio) * delta
 
-        return max(lsv, 0)
+        alpha = (l**2 / eps_T) * np.log(1.0 / (2.0 * delta_fail))
+        eta = float(self.rng.laplace(loc=0.0, scale=(l**2)/eps_T))
+        lam_tilde = lam_min + eta
 
-    def _gen_samples(self, epsilon, delta, num_samples):
-        num_samples = int(num_samples)
-        result_matrices = []
+        lam_lb = max(lam_tilde - alpha, 0.0)
+        sigma2 = max((l**2) / s_bar - lam_lb, 0.0)
 
-        sigma_prime = self.compute_DP_LSV()
-        sigma = self.find_minimal_sigma(epsilon, delta) - sigma_prime
-        X = np.concatenate((self.D, sigma * np.eye(self.d))).T
+        print(f"sigma: {np.sqrt(sigma2):.10e}")
+        print(f"lam_min: {lam_min:.10e}")
+        print(f"lam_lb: {lam_lb:.10e}")
+        print(f"lam_tilde: {lam_tilde:.10e}")
+        print(f"eta: {eta:.10e}")
+        print(f"ratio: {ratio:.10e}")
+        print(f"s_bar: {s_bar:.10e}")
+        print(f"alpha: {alpha:.10e}")
+        print(f"upper bound of sigma: {np.sqrt((l**2) / s_bar):.10e}")
+        print(f"l: {l:.10e}")
+        print(f"lam_min: {lam_min:.10e}")
 
-        for _ in range(self.r):
-            noise = self.rng.normal(loc=0, scale=1, size=(X.shape[1], num_samples))
-            result_matrices.append(X @ noise)
-
-        # Concatenating the resulting matrices by row
-        final_matrix = np.concatenate(result_matrices, axis=0).T
-
-        return final_matrix
-
+        return np.sqrt(sigma2)

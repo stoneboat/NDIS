@@ -41,18 +41,18 @@ class EmpiricalBootstrap:
         # error percentage is 0.1
         # P(mu >= x - d_0.9) >= 0.9
         lb_one_sided = sample_mean - np.percentile(
-            delta_means, q=100 - one_sided_error_percentage, interpolation="higher"
+            delta_means, q=100 - one_sided_error_percentage, method="higher"
         )
         # P(mu <= x - d_0.1) >= 0.9
         # error percentage is 0.1
         ub_one_sided = sample_mean - np.percentile(
-            delta_means, q=one_sided_error_percentage, interpolation="lower"
+            delta_means, q=one_sided_error_percentage, method="lower"
         )
         lb_two_sided = sample_mean - np.percentile(
-            delta_means, q=100 - two_sided_error_percentage, interpolation="higher"
+            delta_means, q=100 - two_sided_error_percentage, method="higher"
         )
         ub_two_sided = sample_mean - np.percentile(
-            delta_means, q=two_sided_error_percentage, interpolation="lower"
+            delta_means, q=two_sided_error_percentage, method="lower"
         )
         return self._RTV(lb_one_sided, lb_two_sided, ub_one_sided, ub_two_sided)
 
